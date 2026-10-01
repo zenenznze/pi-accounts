@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
-import { createMockContext } from "../../../test/support.js";
 import { AccountStore } from "../src/account-store.js";
 import { createBuiltinProviderAdapters } from "../src/oauth.js";
 import { RuntimeAuthCoordinator } from "../src/runtime-auth.js";
 import { InMemoryAccountStorageBackend } from "../src/storage.js";
+import { createMockContext } from "./support.js";
 
 test("Radius publishes the selected account catalog through Pi's real model runtime", async () => {
 	const requests: string[] = [];

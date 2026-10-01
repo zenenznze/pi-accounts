@@ -11,11 +11,6 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { beforeAll, test } from "vitest";
-import {
-	createMockContext as createBaseMockContext,
-	createCustomSelectorHarness,
-	createMockPi,
-} from "../../../test/support.js";
 import accountsExtension, {
 	ACCOUNTS_STATUS_KEY,
 	AccountStore,
@@ -34,6 +29,11 @@ import { OAUTH_CREDENTIAL_SOURCE_CHANNEL } from "../src/oauth-credential-source.
 import { RuntimeAuthCoordinator } from "../src/runtime-auth.js";
 import { ACCOUNT_SELECTION_ENTRY_TYPE } from "../src/session-selection.js";
 import { InMemoryAccountStorageBackend } from "../src/storage.js";
+import {
+	createMockContext as createBaseMockContext,
+	createCustomSelectorHarness,
+	createMockPi,
+} from "./support.js";
 
 beforeAll(() => initTheme("dark", false));
 
