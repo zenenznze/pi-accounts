@@ -435,6 +435,8 @@ function createAccountCommand(
 				adapters,
 				owner,
 				{
+					startup: (adapter, name, enabled, signal, isCurrent) =>
+						setStartupAccount(ctx, store, adapter, name, enabled, signal, isCurrent),
 					login: (adapter, name, signal, isCurrent) =>
 						loginAccount(
 							ctx,
@@ -609,6 +611,50 @@ async function switchAccount(
 		formatActivationMessage("Activated", adapter, parsed.name, result),
 		result.status === "active" ? "info" : "error",
 	);
+}
+
+async function setStartupAccount(
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	adapter: AccountProviderAdapter,
+	name: string,
+	enabled: boolean,
+	signal: AbortSignal,
+	isCurrent: () => boolean,
+): Promise<boolean> {
+	const ownsOperation = () => !signal.aborted && isCurrent();
+	if (!ownsOperation()) return false;
+	let saved = false;
+	try {
+		await store.updateProvider(adapter.id, (state) => {
+			if (!ownsOperation() || !getOwnCredential(state.accounts, name)) return state;
+			// A stale off action must not clear a different default chosen concurrently.
+			if (!enabled && state.active !== name) return state;
+			saved = true;
+			return { ...state, active: enabled ? name : undefined };
+		});
+	} catch (error) {
+		if (ownsOperation()) {
+			ctx.ui.notify(
+				`Could not save the ${adapter.displayName} startup default: ${redactTokenText(errorMessage(error))}`,
+				"error",
+			);
+		}
+		return false;
+	}
+	if (!ownsOperation()) return false;
+	if (!saved) {
+		ctx.ui.notify(
+			"The saved accounts or startup default changed. Reopen /accounts and retry.",
+			"warning",
+		);
+		return false;
+	}
+	ctx.ui.notify(
+		`Startup default for ${adapter.displayName}: ${enabled ? `"${name}"` : "default Pi login"}. Applies to new sessions only; this session is unchanged.`,
+		"info",
+	);
+	return true;
 }
 
 async function removeAccount(

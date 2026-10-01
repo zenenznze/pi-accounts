@@ -10,6 +10,7 @@ import {
 	ModelRuntime,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, test } from "vitest";
 import accountsExtension, {
 	ACCOUNTS_STATUS_KEY,
@@ -647,6 +648,7 @@ test("accounts menu summarizes all supported providers and prioritizes current p
 		"Login new account",
 		"Remove account",
 		"Switch another provider’s account",
+		"Startup default accounts",
 	]);
 });
 
@@ -677,6 +679,7 @@ test("accounts menu prioritizes login when the current provider has no saved acc
 		"Login new account",
 		"Switch another provider’s account",
 		"Remove account",
+		"Startup default accounts",
 	]);
 });
 
@@ -747,7 +750,206 @@ test("accounts menu uses generic provider switch for unsupported current models"
 		"Login new account",
 		"Switch provider account",
 		"Remove account",
+		"Startup default accounts",
 	]);
+});
+
+async function startupMenuHarness(selections: string[] = []) {
+	const store = new AccountStore(new InMemoryAccountStorageBackend());
+	await store.write({
+		version: 1,
+		providers: {
+			anthropic: {
+				active: "alpha",
+				accounts: { alpha: credential("alpha"), beta: credential("beta") },
+			},
+			"openai-codex": {
+				active: "work",
+				accounts: { work: credential("work"), ["__proto__"]: credential("prototype") },
+			},
+		},
+	});
+	const mock = createMockPi();
+	accountsExtension(mock.pi, {
+		store,
+		providers: [fakeProvider("anthropic"), fakeProvider("openai-codex")],
+	});
+	const runtime = runtimeHarness(mock);
+	const sessionManager = createTestSessionManager();
+	const context = createInteractiveAccountContext(
+		{
+			model: { provider: "anthropic", id: "claude" },
+			modelRegistry: runtime.registry,
+			sessionManager,
+		},
+		{ selections },
+	);
+	await mock.events.get("session_start")?.[0]?.({ reason: "new" }, context.ctx);
+	return { store, mock, runtime, sessionManager, ...context };
+}
+
+test("startup toggle saves one default without changing open or resumed sessions", async () => {
+	const h = await startupMenuHarness(["Startup default accounts", "○ Anthropic · beta · off"]);
+	const before = h.store.read();
+	const entriesBefore = h.sessionManager.getEntries();
+	const keysBefore = new Map(h.runtime.keys);
+	await h.mock.commands.get("accounts")?.handler("", h.ctx);
+
+	before.providers.anthropic.active = "beta";
+	const expected = before;
+	assert.deepEqual(h.store.read(), expected);
+	assert.deepEqual(h.sessionManager.getEntries(), entriesBefore);
+	assert.deepEqual(h.runtime.keys, keysBefore);
+	assert.match(h.selectCalls[0]?.title ?? "", /Startup defaults \(new sessions\):/);
+	assert.ok(h.selectCalls[1]?.options.includes("✓ Anthropic · alpha · on"));
+	assert.ok(h.selectCalls[2]?.options.includes("✓ Anthropic · beta · on"));
+	assert.ok(h.selectCalls[2]?.options.includes("○ Anthropic · alpha · off"));
+	assert.match(h.notifications.at(-1)?.message ?? "", /new sessions only.*unchanged/);
+
+	const nextSession = createTestSessionManager();
+	const nextContext = createMockContext({
+		model: { provider: "anthropic", id: "claude" },
+		modelRegistry: h.runtime.registry,
+		sessionManager: nextSession,
+	}).ctx;
+	await h.mock.events.get("session_start")?.[0]?.({ reason: "new" }, nextContext);
+	assert.equal(latestSessionSelections(nextSession).anthropic, "beta");
+	await h.mock.events.get("session_start")?.[0]?.({ reason: "resume" }, h.ctx);
+	assert.equal(latestSessionSelections(h.sessionManager).anthropic, "alpha");
+	assert.equal(h.runtime.keys.get("anthropic"), "access-alpha");
+});
+
+test("startup toggles work through the TUI keyboard menu and fit narrow terminals", async () => {
+	const h = await startupMenuHarness();
+	let harness: ReturnType<typeof createCustomSelectorHarness> | undefined;
+	h.ctx.mode = "tui";
+	h.ctx.ui.custom = async (factory: unknown) => {
+		harness = createCustomSelectorHarness(factory, 100, undefined, 40);
+		return harness.resultPromise;
+	};
+	const running = h.mock.commands.get("accounts")?.handler("", h.ctx);
+	await waitForTest(() => harness !== undefined);
+	assert.ok(harness);
+	for (let index = 0; index < 4; index += 1) harness.handleInput("tui.select.down");
+	assert.match(harness.render().join("\n"), /[›→].*Startup default accounts/);
+	harness.handleInput("tui.select.confirm");
+	await waitForTest(
+		() => harness?.render().join("\n").includes("✓ Anthropic · alpha · on") === true,
+	);
+	assert.match(harness.render().join("\n"), /✓ Anthropic · alpha · on/);
+	harness.handleInput("tui.select.down");
+	harness.handleInput("tui.select.confirm");
+	await waitForTest(
+		() => harness?.render().join("\n").includes("✓ Anthropic · beta · on") === true,
+	);
+	assert.equal(h.store.read().providers.anthropic.active, "beta");
+	assert.match(harness.render().join("\n"), /✓ Anthropic · beta · on/);
+	assert.match(harness.render().join("\n"), /○ Anthropic · alpha · off/);
+	for (const line of harness.render(40)) assert.ok(visibleWidth(line) <= 40);
+	harness.handleInput("tui.select.cancel");
+	await waitForTest(
+		() => harness?.render().join("\n").includes("Active accounts (this session)") === true,
+	);
+	harness.handleInput("tui.select.cancel");
+	await running;
+	assert.equal(latestSessionSelections(h.sessionManager).anthropic, "alpha");
+});
+
+test("turning off a startup default restores Pi login only for new sessions", async () => {
+	const h = await startupMenuHarness(["Startup default accounts", "✓ Anthropic · alpha · on"]);
+	const before = h.store.read();
+	await h.mock.commands.get("accounts")?.handler("", h.ctx);
+	const saved = h.store.read();
+	assert.equal(saved.providers.anthropic.active, undefined);
+	assert.deepEqual(saved.providers.anthropic.accounts, before.providers.anthropic.accounts);
+	assert.deepEqual(saved.providers["openai-codex"], before.providers["openai-codex"]);
+	assert.equal(latestSessionSelections(h.sessionManager).anthropic, "alpha");
+	assert.equal(h.runtime.keys.get("anthropic"), "access-alpha");
+	assert.match(h.notifications.at(-1)?.message ?? "", /default Pi login/);
+	const sessionManager = createTestSessionManager();
+	const next = createMockContext({ modelRegistry: h.runtime.registry, sessionManager }).ctx;
+	await h.mock.events.get("session_start")?.[0]?.({ reason: "new" }, next);
+	assert.equal(latestSessionSelections(sessionManager).anthropic, null);
+});
+
+test("startup defaults support other providers and own-property account names", async () => {
+	const h = await startupMenuHarness([
+		"Startup default accounts",
+		"○ OpenAI Codex · __proto__ · off",
+	]);
+	const before = h.store.read();
+	await h.mock.commands.get("accounts")?.handler("", h.ctx);
+	assert.equal(h.store.read().providers["openai-codex"].active, "__proto__");
+	assert.deepEqual(h.store.read().providers.anthropic, before.providers.anthropic);
+	assert.deepEqual(
+		h.store.read().providers["openai-codex"].accounts,
+		before.providers["openai-codex"].accounts,
+	);
+	assert.equal(latestSessionSelections(h.sessionManager)["openai-codex"], "work");
+});
+
+test("closing the startup default menu leaves saved data unchanged", async () => {
+	const h = await startupMenuHarness(["Startup default accounts"]);
+	const before = h.store.read();
+	await h.mock.commands.get("accounts")?.handler("", h.ctx);
+	assert.deepEqual(h.store.read(), before);
+});
+
+test("startup toggle revalidates an account removed after the menu was rendered", async () => {
+	const h = await startupMenuHarness();
+	let calls = 0;
+	h.ctx.ui.select = async () => {
+		if (++calls === 1) return "Startup default accounts";
+		if (calls !== 2) return undefined;
+		await h.store.updateProvider("anthropic", (state) => {
+			delete state.accounts.beta;
+			return state;
+		});
+		return "○ Anthropic · beta · off";
+	};
+	await h.mock.commands.get("accounts")?.handler("", h.ctx);
+	assert.equal(h.store.read().providers.anthropic.active, "alpha");
+	assert.match(h.notifications.at(-1)?.message ?? "", /changed.*retry/);
+});
+
+test("a stale startup off action cannot clear a concurrently selected default", async () => {
+	const h = await startupMenuHarness();
+	let calls = 0;
+	h.ctx.ui.select = async () => {
+		if (++calls === 1) return "Startup default accounts";
+		if (calls !== 2) return undefined;
+		await h.store.updateProvider("anthropic", (state) => ({ ...state, active: "beta" }));
+		return "✓ Anthropic · alpha · on";
+	};
+	await h.mock.commands.get("accounts")?.handler("", h.ctx);
+	assert.equal(h.store.read().providers.anthropic.active, "beta");
+	assert.match(h.notifications.at(-1)?.message ?? "", /changed.*retry/);
+});
+
+test("session shutdown while a startup toggle waits for storage prevents mutation", async () => {
+	const h = await startupMenuHarness(["Startup default accounts", "○ Anthropic · beta · off"]);
+	const before = h.store.read();
+	const update = h.store.updateProvider.bind(h.store);
+	h.store.updateProvider = async (providerId, mutator) => {
+		await h.mock.events.get("session_shutdown")?.[0]?.({}, h.ctx);
+		return update(providerId, mutator);
+	};
+	await h.mock.commands.get("accounts")?.handler("", h.ctx);
+	assert.deepEqual(h.store.read(), before);
+	assert.equal(h.notifications.length, 0);
+});
+
+test("startup persistence errors are reported without changing selections", async () => {
+	const h = await startupMenuHarness(["Startup default accounts", "○ Anthropic · beta · off"]);
+	const before = h.store.read();
+	h.store.updateProvider = async () => {
+		throw new Error("Storage unavailable");
+	};
+	await h.mock.commands.get("accounts")?.handler("", h.ctx);
+	assert.deepEqual(h.store.read(), before);
+	assert.equal(latestSessionSelections(h.sessionManager).anthropic, "alpha");
+	assert.equal(h.notifications.at(-1)?.level, "error");
+	assert.match(h.notifications.at(-1)?.message ?? "", /Could not save.*startup default/);
 });
 
 test("switch another provider account selects provider before account", async () => {

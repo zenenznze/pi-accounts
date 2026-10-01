@@ -15,6 +15,7 @@ import type { ProviderAccountSelections } from "./session-selection.js";
 
 const LOGIN_ACTION = "Login new account";
 const REMOVE_ACTION = "Remove account";
+const STARTUP_ACTION = "Startup default accounts";
 const SWITCH_PROVIDER_ACTION = "Switch provider account";
 const SWITCH_ANOTHER_PROVIDER_ACTION = "Switch another provider’s account";
 
@@ -29,6 +30,13 @@ type AccountMenuOwner = {
 };
 
 type AccountMenuHandlers = {
+	startup(
+		adapter: AccountProviderAdapter,
+		name: string,
+		enabled: boolean,
+		signal: AbortSignal,
+		isCurrent: () => boolean,
+	): Promise<boolean>;
 	login(
 		adapter: AccountProviderAdapter,
 		name: string,
@@ -53,6 +61,7 @@ type ProviderMenuState = {
 	id: AccountProviderId;
 	adapter: AccountProviderAdapter;
 	active: string | undefined;
+	startup: string | undefined;
 	selectionInvalid: boolean;
 	accounts: Record<string, StoredOAuthCredential>;
 };
@@ -78,7 +87,13 @@ export async function showAccountsMenu(
 		hasAnyStoredAccount: boolean;
 		selectionError?: string;
 	};
-	type Screen = "main" | "login-providers" | "switch-providers" | "switch-accounts" | "remove";
+	type Screen =
+		| "main"
+		| "login-providers"
+		| "switch-providers"
+		| "switch-accounts"
+		| "startup"
+		| "remove";
 	type Action =
 		| "login-route"
 		| "login-provider"
@@ -87,7 +102,9 @@ export async function showAccountsMenu(
 		| "switch-provider"
 		| "switch-account"
 		| "remove-route"
-		| "remove-account";
+		| "remove-account"
+		| "startup-route"
+		| "startup-toggle";
 	const menu = defineMenu<State, Screen, Action, ExtensionCommandContext>({
 		start: "main",
 		screens: {
@@ -164,6 +181,24 @@ export async function showAccountsMenu(
 					hint: "back",
 				};
 			},
+			startup: ({ state }) => ({
+				kind: "actions",
+				title: STARTUP_ACTION,
+				lines: [
+					"Select an account to turn its startup default on or off.",
+					"One default per provider. Off uses default Pi login.",
+					"Applies to new sessions only; open and resumed sessions keep their selections.",
+				],
+				items: removeAccountOptions(state.states, state.currentProviderId).map((option) => ({
+					id: removeAccountItemId(option.adapter.id, option.accountName),
+					label: formatStartupOption(
+						option.label,
+						state.states.get(option.adapter.id)?.startup === option.accountName,
+					),
+					action: "startup-toggle",
+				})),
+				hint: "back",
+			}),
 			remove: ({ state }) => ({
 				kind: "actions",
 				title: "Remove account",
@@ -219,6 +254,24 @@ export async function showAccountsMenu(
 				);
 				return { kind: "close" };
 			},
+			"startup-route": async () => ({ kind: "to", screen: "startup" }),
+			"startup-toggle": async ({ itemId, state, signal }) => {
+				const option = removeAccountOptions(state.states, state.currentProviderId).find(
+					(candidate) =>
+						removeAccountItemId(candidate.adapter.id, candidate.accountName) === itemId,
+				);
+				if (!option) return { kind: "rejected" };
+				const enabled = state.states.get(option.adapter.id)?.startup !== option.accountName;
+				const saved = await handlers.startup(
+					option.adapter,
+					option.accountName,
+					enabled,
+					signal,
+					owner.isCurrent,
+				);
+				if (!owner.isCurrent()) return { kind: "close" };
+				return saved ? { kind: "stay" } : { kind: "rejected" };
+			},
 			"remove-route": async () => ({ kind: "to", screen: "remove" }),
 			"remove-account": async ({ itemId, signal }) => {
 				const states = await readProviderMenuStates(store, adapters, session);
@@ -272,6 +325,7 @@ async function readProviderMenuStates(
 			id,
 			adapter: requireAdapter(adapters, id),
 			active,
+			startup: state.active,
 			selectionInvalid:
 				session.error !== undefined ||
 				(active !== undefined && !getOwnCredential(state.accounts, active)),
@@ -301,8 +355,13 @@ function formatAccountsMenuTitle(
 		"Current model:",
 		`  ${formatCurrentModel(ctx)}`,
 		"",
-		"Active accounts:",
+		"Active accounts (this session):",
 		...activeLines,
+		"",
+		"Startup defaults (new sessions):",
+		...sortedProviderStates(states)
+			.filter((state) => accountNames(state).length > 0)
+			.map((state) => `  ${state.adapter.displayName}: ${state.startup ?? "default Pi login"}`),
 		"",
 		"What do you want to do?",
 	].join("\n");
@@ -323,7 +382,7 @@ function buildAccountMainItems(
 ): Array<{
 	id: string;
 	label: string;
-	action: "login-route" | "switch-current" | "switch-route" | "remove-route";
+	action: "login-route" | "switch-current" | "switch-route" | "remove-route" | "startup-route";
 }> {
 	if (!hasAnyStoredAccount && !selectionInvalid) {
 		return [{ id: "login", label: LOGIN_ACTION, action: "login-route" }];
@@ -349,6 +408,9 @@ function buildAccountMainItems(
 						},
 					]
 				: []),
+			...(hasAnyStoredAccount
+				? [{ id: "startup", label: STARTUP_ACTION, action: "startup-route" as const }]
+				: []),
 		];
 	}
 	return [
@@ -359,9 +421,16 @@ function buildAccountMainItems(
 			action: "switch-route",
 		},
 		...(hasAnyStoredAccount
-			? [{ id: "remove", label: REMOVE_ACTION, action: "remove-route" as const }]
+			? [
+					{ id: "remove", label: REMOVE_ACTION, action: "remove-route" as const },
+					{ id: "startup", label: STARTUP_ACTION, action: "startup-route" as const },
+				]
 			: []),
 	];
+}
+
+function formatStartupOption(label: string, enabled: boolean): string {
+	return `${enabled ? "✓" : "○"} ${label} · ${enabled ? "on" : "off"}`;
 }
 
 function accountItemId(accountName: string): string {
