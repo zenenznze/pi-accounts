@@ -1,5 +1,5 @@
 {
-	"name": "@zenenznze/pi-accounts",
+	"name": "@leo_aifirst/pi-accounts",
 	"version": "1.0.0",
 	"description": "Pi extension for switching named provider-owned OAuth accounts.",
 	"type": "module",

@@ -1,11 +1,11 @@
-# @zenenznze/pi-accounts
+# @leo_aifirst/pi-accounts
 
 Our maintained fork, sourced from https://github.com/zenenznze/pi-accounts.
 The original MIT license and upstream attribution remain intact.
 Version 1.0.0 is being prepared; installation below is usable only after npm publication.
 
 ```sh
-pi install npm:@zenenznze/pi-accounts@1.0.0
+pi install npm:@leo_aifirst/pi-accounts@1.0.0
 ```
 
 Do not load this fork alongside the upstream accounts plugin.
