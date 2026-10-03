@@ -1,6 +1,6 @@
 {
-	"name": "@narumitw/pi-accounts",
-	"version": "0.51.0",
+	"name": "@zenenznze/pi-accounts",
+	"version": "1.0.0",
 	"description": "Pi extension for switching named provider-owned OAuth accounts.",
 	"type": "module",
 	"license": "MIT",
@@ -57,8 +57,6 @@
 		"typescript": "7.0.2",
 		"vitest": "^4.1.11"
 	},
-	"repository": {
-		"type": "git",
-		"url": "ssh://gitea/joe/pi-accounts.git"
-	}
+	"publishConfig": {"access": "public", "registry": "https://registry.npmjs.org"},
+	"repository": {"type": "git", "url": "git+https://github.com/zenenznze/pi-accounts.git"}
 }
